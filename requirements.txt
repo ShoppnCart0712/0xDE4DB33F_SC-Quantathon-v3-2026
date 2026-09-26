@@ -7,3 +7,8 @@ scikit-learn
 matplotlib
 pylatexenc
 jupyter
+pandas
+seaborn
+geopandas
+lightgbm
+zstandard>=0.22
