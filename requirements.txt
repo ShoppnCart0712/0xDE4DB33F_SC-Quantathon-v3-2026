@@ -10,3 +10,5 @@ jupyter
 pandas
 seaborn
 geopandas
+lightgbm
+zstandard>=0.22
