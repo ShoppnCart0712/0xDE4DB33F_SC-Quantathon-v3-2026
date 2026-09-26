@@ -7,3 +7,6 @@ scikit-learn
 matplotlib
 pylatexenc
 jupyter
+pandas
+seaborn
+geopandas
