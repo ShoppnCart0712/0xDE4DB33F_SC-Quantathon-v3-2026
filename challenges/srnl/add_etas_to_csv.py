@@ -1,4 +1,4 @@
-# CHAT: Export ETAS plus five-year Charlesonian features from an optional shared historical catalog.
+# CHAT: Export expanding Charlesonian history after five years of startup, alongside ETAS.
 """Append ETAS and four Charlesonian magnitude sums to seismic CSV rows.
 
 Requires NumPy and the updated fuckassequation.py beside this file.
@@ -10,11 +10,13 @@ catalog is suitable for rolling forecasts only when those earlier events
 would already have been observed. Use --history-before TIME for forecasts
 whose information is frozen at a common issuance time. No model is fitted.
 
-Charlesonian defaults to 1,825 days, all valid magnitudes, and four disjoint
-bands. ETAS keeps its own defaults: 180 days, 200 km, magnitude >1.75.
-Early partial Charlesonian windows are calculated and flagged with
-Charlesonian_full_window=0. Preserve their earthquakes as history, but exclude
-these rows when fitting weights that require a full five-year window.
+Charlesonian uses ALL earlier history, all valid magnitudes, and four disjoint
+bands. The first 1,825 days are startup: Charlesonian fields stay blank and
+Charlesonian_full_window=0. After startup, the flag becomes 1 and the sums
+include all earlier earthquakes, including those in the first five years.
+ETAS keeps its own defaults: 180 days, 200 km, magnitude >1.75.
+Omit --charlesonian-days for expanding history; supplying it opts into a
+rolling lookback. --charlesonian-warmup-days controls the startup delay.
 """
 
 import argparse
@@ -31,8 +33,9 @@ import tempfile
 def add_etas_to_csv(
     input_csv, output_csv, equations_file=None, *,
     dt_max=180.0, dist_max=200.0, mag_min=1.75, cell_size=0.5,
-    history_csv=None, charlesonian_days=1825.0, charlesonian_mag_min=None,
+    history_csv=None, charlesonian_days=None, charlesonian_mag_min=None,  # CHAT: None retains ALL earlier history.
     history_start=None, history_before=None,
+    charlesonian_warmup_days=1825.0,  # CHAT: Separate startup from the historical lookback.
 ):
     """Write a feature CSV; return the number of seismic rows scored.
 
@@ -44,8 +47,10 @@ def add_etas_to_csv(
     history_start optionally specifies the known start of usable coverage
     (ISO timestamp). Events before that start are excluded. If omitted, the
     earliest valid seismic timestamp is used as a conservative start proxy.
-    Charlesonian_full_window checks only elapsed coverage time, not network
-    completeness, missing records, or magnitude detectability.
+    Charlesonian_full_window now means the startup period has completed; the
+    name is retained for existing workflows. It checks elapsed coverage time,
+    not network completeness, missing records, or magnitude detectability.
+    Early rows are retained with ETAS, blank Charlesonian fields, and flag 0.
 
     history_before optionally restricts the available history to times strictly
     before a common forecast issuance time. Rows earlier than that time remain
@@ -62,8 +67,11 @@ def add_etas_to_csv(
         raise ValueError("Output must differ from the input and history CSV paths.")
     if not math.isfinite(dt_max) or dt_max <= 0:
         raise ValueError("dt_max must be finite and positive.")
-    if not math.isfinite(charlesonian_days) or charlesonian_days <= 0:
-        raise ValueError("charlesonian_days must be finite and positive.")
+    # CHAT: Allow unlimited history and validate the independent startup delay.
+    if charlesonian_days is not None and (not math.isfinite(charlesonian_days) or charlesonian_days <= 0):
+        raise ValueError("charlesonian_days must be finite and positive, or None for all history.")
+    if not math.isfinite(charlesonian_warmup_days) or charlesonian_warmup_days < 0:
+        raise ValueError("charlesonian_warmup_days must be finite and nonnegative.")
     # CHAT: Match the user's clean filename; retain --equations for any other location.
     equations_file = Path(equations_file) if equations_file else Path(__file__).with_name('fuckassequation.py')
     spec = importlib.util.spec_from_file_location('etas_equations', equations_file)
@@ -71,8 +79,8 @@ def add_etas_to_csv(
         raise ValueError(f"Cannot load equations from {equations_file}")
     etas = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(etas)
-    if not hasattr(etas, 'TheCharlesonian'):
-        raise ValueError("Use the updated fuckassequation.py containing TheCharlesonian.")
+    if not hasattr(etas, 'CHARLESONIAN_WARMUP_DAYS'):
+        raise ValueError("Replace fuckassequation.py with the expanding-history version containing CHARLESONIAN_WARMUP_DAYS.")
 
     # CHAT: Load shared history once and apply any explicit coverage/forecast boundaries.
     events = sorted(etas.load_events_from_csv(history_csv), key=lambda e: e.day)
@@ -91,7 +99,8 @@ def add_etas_to_csv(
     # CHAT: Four separate band columns retain the information needed to learn distinct weights.
     feature_columns = ['ETAS', *band_columns, 'Charlesonian_full_window']
     etas.TheCharlesonian([], 0.0, 0.0, 0.0,
-                         lookback_days=charlesonian_days, mag_min=charlesonian_mag_min)
+                         lookback_days=charlesonian_days, mag_min=charlesonian_mag_min,
+                         warmup_days=charlesonian_warmup_days, history_start=coverage_start)  # CHAT: Validate startup controls.
     seismic_count = 0
     temporary_path = None
     try:
@@ -122,16 +131,21 @@ def add_etas_to_csv(
                                 mag_min=mag_min, cell_size=cell_size,
                             )
                             row['ETAS'] = result['etas_score']
-                            # CHAT: Use the five-year history independently of ETAS's shorter cutoff.
-                            row.update(etas.TheCharlesonian(
-                                charlesonian_catalog, lat, lng, current_day,
-                                lookback_days=charlesonian_days, mag_min=charlesonian_mag_min,
-                            ))
-                            # CHAT: Flag partial startup windows without deleting their records.
-                            row['Charlesonian_full_window'] = int(
-                                coverage_start is not None
-                                and current_day - charlesonian_days >= coverage_start
+                            # CHAT: Begin output five years after the shared history starts; frozen history cannot age past its cutoff.
+                            available_until = current_day if freeze_day is None else min(current_day, freeze_day)
+                            ready = (
+                                (coverage_start is None and charlesonian_warmup_days == 0)
+                                or (coverage_start is not None
+                                    and available_until >= coverage_start + charlesonian_warmup_days)
                             )
+                            row['Charlesonian_full_window'] = int(ready)
+                            # CHAT: Leave startup fields blank; after startup include ALL earlier years by default.
+                            if ready:
+                                row.update(etas.TheCharlesonian(
+                                    charlesonian_catalog, lat, lng, current_day,
+                                    lookback_days=charlesonian_days, mag_min=charlesonian_mag_min,
+                                    warmup_days=charlesonian_warmup_days, history_start=coverage_start,
+                                ))
                         except (TypeError, ValueError, AttributeError, ArithmeticError) as exc:
                             raise ValueError(f"Seismic data row {index}: {exc}") from exc
                         seismic_count += 1
@@ -144,14 +158,16 @@ def add_etas_to_csv(
     return seismic_count
 
 
-# CHAT: Add CLI controls for shared history, the five-year window, coverage, and forecast issuance time.
+# CHAT: Expose the expanding history and startup delay separately, preserving other CLI controls.
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('input_csv')
     parser.add_argument('output_csv')
     parser.add_argument('--equations', help='Path to fuckassequation.py; default is beside this script')
     parser.add_argument('--history-csv', help='Shared seismic history for BOTH features; default input CSV')
-    parser.add_argument('--charlesonian-days', type=float, default=1825.0)
+    parser.add_argument('--charlesonian-days', type=float, help='Optional rolling lookback; omit for ALL earlier history')
+    parser.add_argument('--charlesonian-warmup-days', type=float, default=1825.0,
+                        help='Startup delay before Charlesonian values begin; default 1825 days')
     parser.add_argument('--charlesonian-mag-min', type=float, help='Strict magnitude cutoff; default no cutoff')
     parser.add_argument('--history-start', help='Known usable coverage start, ISO timestamp; default first seismic time')
     parser.add_argument('--history-before', help='Freeze available history strictly before this ISO timestamp')
@@ -168,6 +184,7 @@ if __name__ == '__main__':
             history_csv=args.history_csv, charlesonian_days=args.charlesonian_days,
             charlesonian_mag_min=args.charlesonian_mag_min,
             history_start=args.history_start, history_before=args.history_before,
+            charlesonian_warmup_days=args.charlesonian_warmup_days,  # CHAT: Forward startup independently.
         )
     except (OSError, TypeError, ValueError, IndexError, ArithmeticError) as exc:
         parser.error(str(exc))

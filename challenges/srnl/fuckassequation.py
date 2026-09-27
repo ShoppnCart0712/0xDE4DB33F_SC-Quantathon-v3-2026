@@ -13,9 +13,13 @@ Export the four bands for every seismic row:
     python fuckassequation.py Data/earthquakeq_train.csv --charlesonian-output Data/earthquakeq_train_charlesonian.csv
 Freeze training history when scoring another file:
     python fuckassequation.py Data/earthquakeq_test.csv --charlesonian-output Data/earthquakeq_test_charlesonian.csv --history-csv Data/earthquakeq_train.csv
-# CHAT: The default Charlesonian window is now 1,825 days; no magnitude cutoff is applied.
-Use --history-days to override it, or --history-mag-min 1.75 for a strict
-magnitude cutoff. All magnitudes are included by default. Current-time and future events never contribute.
+# CHAT: Expand over ALL earlier history; five years is a startup delay, not a rolling lookback.
+Charlesonian values are unavailable until 1,825 days after the history starts.
+Earlier earthquakes remain in the sums forever. Use --history-start to choose
+the start; otherwise use the earliest valid seismic event in the history CSV.
+--history-days explicitly opts into a rolling lookback; omit it for all history.
+--warmup-days changes the startup delay; --history-mag-min sets an optional
+strict magnitude cutoff. Current-time and future events never contribute.
 
 CHANGES (search for '# CHAT:' for descriptions beside edited code):
 * Exact continuous time integral instead of the 30-sample daily sum.
@@ -659,8 +663,9 @@ def etas_from_csv_row(
 
 # CHAT: Add four disjoint distance bands for magnitude-weighted historical earthquake activity.
 CHARLESONIAN_DISTANCE_EDGES_KM = (0.0, 25.0, 50.0, 100.0, 200.0)
-# CHAT: Use a fixed five-year (1,825-day) history by default for comparable features.
-CHARLESONIAN_LOOKBACK_DAYS = 5 * 365
+# CHAT: Separate the five-year startup delay from the unlimited historical lookback.
+CHARLESONIAN_LOOKBACK_DAYS = None
+CHARLESONIAN_WARMUP_DAYS = 5 * 365
 
 
 # CHAT: Prepare a time-sorted, vectorized history once for efficient repeated point queries.
@@ -691,6 +696,7 @@ def TheCharlesonian(
     events, lat, lng, current_day, *,
     distance_edges_km=CHARLESONIAN_DISTANCE_EDGES_KM,
     lookback_days=CHARLESONIAN_LOOKBACK_DAYS, mag_min=None,
+    warmup_days=CHARLESONIAN_WARMUP_DAYS, history_start=None,  # CHAT: Gate output, not historical inputs.
 ):
     """Return one magnitude sum per distance band for a point at a given time.
 
@@ -702,18 +708,24 @@ def TheCharlesonian(
             or a prepared _CharlesonianCatalog for repeated queries.
     current_day: numeric day on the events' time origin, or an ISO timestamp/
                  datetime when the events use the CSV loader's UTC epoch.
-    lookback_days: defaults to 1,825 days (five 365-day years). Explicit None
-                   means all supplied earlier history; a positive value
+    lookback_days: defaults to None: ALL supplied earlier history; a positive value
                    restricts history to current_day-lookback_days < day < current_day.
+    warmup_days: wait 1,825 days from history_start before returning sums.
+                 Set zero explicitly to disable this startup requirement.
+    history_start: numeric day or ISO timestamp, inclusive. Defaults to the
+                   earliest valid seismic event in the supplied history.
+                   Events before an explicit start never enter the sums.
     mag_min: None includes all valid magnitudes (including zero/negative ones);
              otherwise require event.mag > mag_min. Depth is not filtered.
 
-    Early rows with less than five years of supplied history use a partial
-    window. The combined add_etas_to_csv exporter flags these for exclusion
-    when fitting weights; this point-query function does not drop observations.
+    Early rows return None for each band (blank fields in CSV; null in JSON).
+    At exactly history_start + warmup_days, output begins. Historical events
+    from the startup period remain available to EVERY later query. A mature
+    query uses expanding history by default, never a rolling five-year window.
     Events at or after current_day are always excluded, even in an unsorted
     catalog. Coordinates can be anywhere on Earth; no ETAS grid is required.
-    An empty eligible history returns zeros, not missing values. These sums
+    After startup, an empty bucket returns zero. Unknown history start with a
+    nonzero startup requirement returns None. These sums
     measure recorded activity, not released energy or geological stability.
     """
     if isinstance(current_day, (str, DateTime)):
@@ -723,15 +735,32 @@ def TheCharlesonian(
         raise ValueError("The target requires valid coordinates and a finite time.")
     if lookback_days is not None and (not m.isfinite(lookback_days) or lookback_days <= 0):
         raise ValueError("lookback_days must be positive and finite, or None.")
+    # CHAT: Validate the independent startup delay and optional inclusive history boundary.
+    if not m.isfinite(warmup_days) or warmup_days < 0:
+        raise ValueError("warmup_days must be nonnegative and finite.")
+    if isinstance(history_start, (str, DateTime)):
+        history_start = _to_day(history_start)
+    if history_start is not None and not m.isfinite(history_start):
+        raise ValueError("history_start must be a finite day or valid timestamp.")
     if mag_min is not None and not m.isfinite(mag_min):
         raise ValueError("mag_min must be finite, or None.")
     edges, columns = _charlesonian_columns(distance_edges_km)
     catalog = events if isinstance(events, _CharlesonianCatalog) else _CharlesonianCatalog(events)
+    # CHAT: The combined history sets one common startup origin, not each target file or distance bucket.
+    coverage_start = history_start if history_start is not None else (
+        float(catalog.days[0]) if len(catalog.days) else None
+    )
+    if ((coverage_start is None and warmup_days > 0)
+            or (coverage_start is not None and current_day < coverage_start + warmup_days)):
+        return dict.fromkeys(columns, None)
     # CHAT: Enforce prediction-time history, preventing self, simultaneous-event, and future-event leakage.
     stop = int(np.searchsorted(catalog.days, current_day, side="left"))
     start = 0 if lookback_days is None else int(
         np.searchsorted(catalog.days, current_day - lookback_days, side="right")
     )
+    # CHAT: Keep the first historical earthquake, including all startup-period events, in expanding sums.
+    if coverage_start is not None:
+        start = max(start, int(np.searchsorted(catalog.days, coverage_start, side="left")))
     latitudes, longitudes = catalog.latitudes[start:stop], catalog.longitudes[start:stop]
     magnitudes = catalog.magnitudes[start:stop]
     if mag_min is not None:
@@ -757,6 +786,7 @@ def charlesonian_from_csv_row(
     csv_filename, row_index, *, history_csv=None,
     lookback_days=CHARLESONIAN_LOOKBACK_DAYS, mag_min=None,
     distance_edges_km=CHARLESONIAN_DISTANCE_EDGES_KM,
+    warmup_days=CHARLESONIAN_WARMUP_DAYS, history_start=None,  # CHAT: Share expanding-history startup controls.
 ):
     """Score one seismic row, optionally using only a separate history CSV.
 
@@ -788,6 +818,7 @@ def charlesonian_from_csv_row(
     return TheCharlesonian(
         history, lat, lng, time, lookback_days=lookback_days, mag_min=mag_min,
         distance_edges_km=distance_edges_km,
+        warmup_days=warmup_days, history_start=history_start,  # CHAT: Preserve all history after startup.
     )
 
 
@@ -795,6 +826,7 @@ def charlesonian_from_csv_row(
 def add_charlesonian_to_csv(
     input_csv, output_csv, *, history_csv=None, lookback_days=CHARLESONIAN_LOOKBACK_DAYS,
     mag_min=None, distance_edges_km=CHARLESONIAN_DISTANCE_EDGES_KM,
+    warmup_days=CHARLESONIAN_WARMUP_DAYS, history_start=None,  # CHAT: Delay values, not history collection.
 ):
     """Append magnitude sums to seismic rows; other sources receive blanks.
 
@@ -803,7 +835,9 @@ def add_charlesonian_to_csv(
     for validation/test targets. Existing matching feature columns are replaced,
     not duplicated. Invalid target coordinates/time abort the export; malformed
     historical seismic rows are skipped by the existing CSV history loader.
-    Returns the number of scored seismic rows. No model fitting is performed.
+    Startup rows remain in the output with blank Charlesonian fields. Mature
+    rows use all earlier history by default. Returns the number of processed
+    seismic rows, including startup rows. No model fitting is performed.
     """
     input_csv, output_csv = Path(input_csv), Path(output_csv)
     history_csv = input_csv if history_csv is None else Path(history_csv)
@@ -813,7 +847,8 @@ def add_charlesonian_to_csv(
     catalog = _CharlesonianCatalog(load_events_from_csv(history_csv))
     # CHAT: Validate options even when the target file has no seismic rows.
     TheCharlesonian([], 0.0, 0.0, 0.0, distance_edges_km=edges,
-                    lookback_days=lookback_days, mag_min=mag_min)
+                    lookback_days=lookback_days, mag_min=mag_min,
+                    warmup_days=warmup_days, history_start=history_start)  # CHAT: Validate startup controls too.
     temporary_path = None
     count = 0
     try:
@@ -839,6 +874,7 @@ def add_charlesonian_to_csv(
                             row.update(TheCharlesonian(
                                 catalog, lat, lng, _to_day(row["time"]),
                                 distance_edges_km=edges, lookback_days=lookback_days, mag_min=mag_min,
+                                warmup_days=warmup_days, history_start=history_start,  # CHAT: CSV writes None as blank.
                             ))
                         except (ValueError, TypeError, AttributeError, OverflowError) as exc:
                             raise ValueError(f"Seismic data row {index}: {exc}") from exc
@@ -873,19 +909,23 @@ def main():
     parser.add_argument("--charlesonian", action="store_true", help="Return magnitude sums for one row")
     parser.add_argument("--charlesonian-output", help="Write all seismic-row magnitude sums to this CSV")
     parser.add_argument("--history-csv", help="Use ONLY this CSV as Charlesonian history")
-    # CHAT: Resolve an omitted history-days to 1,825 only in Charlesonian modes.
-    parser.add_argument("--history-days", type=float, help="Charlesonian lookback in days; default 1825")
+    # CHAT: All history is the default; the startup delay has its own independent option.
+    parser.add_argument("--history-days", type=float, help="Optional rolling lookback; omit for ALL earlier history")
+    parser.add_argument("--warmup-days", type=float, help="Startup delay from history start; default 1825 days")
+    parser.add_argument("--history-start", help="Inclusive history start, ISO UTC; default earliest history seismic event")
     parser.add_argument("--history-mag-min", type=float, help="Optional strict Charlesonian magnitude cutoff")
     args = parser.parse_args()
-    # CHAT: Keep ETAS-only option validation unchanged while applying the new Charlesonian default.
-    charlesonian_days = CHARLESONIAN_LOOKBACK_DAYS if args.history_days is None else args.history_days
+    # CHAT: Resolve startup separately from the expanding lookback.
+    charlesonian_days = args.history_days
+    warmup_days = CHARLESONIAN_WARMUP_DAYS if args.warmup_days is None else args.warmup_days
     # CHAT: Reject ambiguous modes instead of ignoring a supplied row index or history option.
     if args.charlesonian_output and (args.row_index is not None or args.charlesonian):
         parser.error("Use --charlesonian-output without row_index or --charlesonian.")
     if not args.charlesonian_output and args.row_index is None:
         parser.error("Provide a row_index or --charlesonian-output.")
     if not (args.charlesonian or args.charlesonian_output) and any(
-        option is not None for option in (args.history_csv, args.history_days, args.history_mag_min)
+        option is not None for option in (args.history_csv, args.history_days, args.history_mag_min,
+                                          args.warmup_days, args.history_start)
     ):
         parser.error("History options require a Charlesonian mode.")
     try:
@@ -894,6 +934,7 @@ def main():
             count = add_charlesonian_to_csv(
                 args.csv_filename, args.charlesonian_output, history_csv=args.history_csv,
                 lookback_days=charlesonian_days, mag_min=args.history_mag_min,
+                warmup_days=warmup_days, history_start=args.history_start,  # CHAT: Forward startup controls.
             )
             print(f"Added Charlesonian features for {count:,} seismic rows: {args.charlesonian_output}")
             return
@@ -902,6 +943,7 @@ def main():
             result = charlesonian_from_csv_row(
                 args.csv_filename, args.row_index, history_csv=args.history_csv,
                 lookback_days=charlesonian_days, mag_min=args.history_mag_min,
+                warmup_days=warmup_days, history_start=args.history_start,  # CHAT: Forward startup controls.
             )
             print(json.dumps(result, indent=2))
             return
