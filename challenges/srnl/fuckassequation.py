@@ -1,10 +1,17 @@
-# CHAT: Document the corrected units, the paper reference, and compatibility with the CSV batch script.
+# CHAT: Support paper-versus-fitted mu/K selection in this single equations file.
 """ETAS features using Chu et al. (2011), Equations (3)-(4), Table 2 Zone 0.
 
 Single row:
     python fuckassequation.py Data/earthquakeq_train.csv 73
 Batch using the previously supplied companion script:
     python add_etas_to_csv.py Data/earthquakeq_train.csv Data/earthquakeq_train_with_etas.csv --equations fuckassequation.py
+
+# CHAT: Select paper or fitted mu/K in this same file; other model settings stay fixed.
+    python fuckassequation.py Data/earthquakeq_test.csv 73 --fitted 0
+    python fuckassequation.py Data/earthquakeq_test.csv 73 --fitted 1
+The CSV exporter also accepts --fitted 0/1 and automatically names the output
+with _featured.csv (paper) or _feature_fitted.csv (fitted) if output is omitted.
+# CHAT: Fitted mu/K are fixed constants; no etas_fit.json file is needed.
 
 # CHAT: Add magnitude-sum feature examples; this feature does not modify the ETAS equations.
 Single-row historical magnitude sums:
@@ -13,13 +20,13 @@ Export the four bands for every seismic row:
     python fuckassequation.py Data/earthquakeq_train.csv --charlesonian-output Data/earthquakeq_train_charlesonian.csv
 Freeze training history when scoring another file:
     python fuckassequation.py Data/earthquakeq_test.csv --charlesonian-output Data/earthquakeq_test_charlesonian.csv --history-csv Data/earthquakeq_train.csv
-# CHAT: Expand over ALL earlier history; five years is a startup delay, not a rolling lookback.
-Charlesonian values are unavailable until 1,825 days after the history starts.
-Earlier earthquakes remain in the sums forever. Use --history-start to choose
-the start; otherwise use the earliest valid seismic event in the history CSV.
---history-days explicitly opts into a rolling lookback; omit it for all history.
---warmup-days changes the startup delay; --history-mag-min sets an optional
-strict magnitude cutoff. Current-time and future events never contribute.
+# CHAT: Restore the rolling 1,825-day Charlesonian window and calculate partial startup histories.
+Only earthquakes strictly within the preceding 1,825 days contribute by default.
+Early rows use the available history; the combined exporter marks these with
+Charlesonian_full_window=0. --history-days changes the rolling window.
+--warmup-days optionally withholds early values (default 0: no delay).
+--history-start sets an inclusive history boundary; --history-mag-min sets an
+optional strict magnitude cutoff. Current-time and future events never contribute.
 
 CHANGES (search for '# CHAT:' for descriptions beside edited code):
 * Exact continuous time integral instead of the 30-sample daily sum.
@@ -288,6 +295,29 @@ PAPER_ZONE0_PARAMETERS = {
 }
 
 
+# CHAT: Hard-code the user's fixed fitted amplitudes; all other coefficients come from the paper.
+FITTED_AMPLITUDES = {"K": 0.846192771684, "mu": 2.12608430449e-08}
+
+
+# CHAT: Select amplitudes without JSON access, changing only mu and K in fitted mode.
+def select_etas_parameters(fitted=0, fit_file=None, *, dt_max=180.0,
+                           dist_max=200.0, mag_min=1.75, magnitude_reference=5.0):
+    """0 returns paper parameters; 1 substitutes the fixed fitted mu/K values.
+
+    # CHAT: Retain fit_file and setting arguments for compatibility with older
+    # CHAT: callers; this selector ignores them and never reads a file.
+    Both modes use identical shape coefficients and caller-supplied settings.
+    These constants were fitted with dt_max=180, dist_max=200, mag_min=1.75,
+    and magnitude_reference=5. No fitting or JSON validation occurs here.
+    """
+    if isinstance(fitted, bool) or not isinstance(fitted, (int, np.integer)) or fitted not in (0, 1):
+        raise ValueError("fitted must be integer 0 (paper) or 1 (fitted mu/K).")
+    parameters = PAPER_ZONE0_PARAMETERS.copy()
+    if fitted:
+        parameters.update(FITTED_AMPLITUDES)
+    return parameters
+
+
 # CHAT: Replace the 30-point daily sum with the analytic continuous-time integral.
 def _time_integral(dt, c, p, forecast_days):
     """Integral of (dt + s + c)^(-p) for s in [0, forecast_days]."""
@@ -364,6 +394,7 @@ def _calculate_etas(
     dist_max=200.0, mag_min=1.75, cell_size=0.5, *,
     forecast_days=30.0, magnitude_reference=5.0,
     quadrature_rtol=1e-6, quadrature_max_order=128, parameters=None,
+    fitted=0, fit_file=None,  # CHAT: Direct callers can select fitted mu/K without another equations file.
 ):
     """Compute an instantaneous point intensity and a finite-cell forecast feature.
 
@@ -390,6 +421,8 @@ def _calculate_etas(
     smaller events is an uncalibrated extrapolation, not a refit for M>1.75.
     Depth and tectonic zone are not filtered by this function. To reproduce the
     paper's population, prefilter the catalog appropriately and use its cutoff.
+    # CHAT: fitted=1 selects hard-coded mu/K; explicit parameters remains available
+    # CHAT: for existing callers, but cannot be combined with fitted=1.
     """
     values = (lat, lng, current_day, dt_max, dist_max, mag_min, cell_size,
               forecast_days, magnitude_reference, quadrature_rtol)
@@ -409,6 +442,16 @@ def _calculate_etas(
     if count < 1 or not m.isclose(count, round(count), rel_tol=0.0, abs_tol=1e-9):
         raise ValueError("cell_size must divide the original 25-degree grid span.")
 
+    # CHAT: Select fixed fitted amplitudes for direct point queries; the batch exporter selects them once.
+    if isinstance(fitted, bool) or not isinstance(fitted, (int, np.integer)) or fitted not in (0, 1):
+        raise ValueError("fitted must be integer 0 (paper) or 1 (fitted mu/K).")
+    if fitted:
+        if parameters is not None:
+            raise ValueError("Use either fitted=1 or explicit parameters, not both.")
+        parameters = select_etas_parameters(
+            fitted, fit_file, dt_max=dt_max, dist_max=dist_max,
+            mag_min=mag_min, magnitude_reference=magnitude_reference,
+        )
     # CHAT: Allow explicit parameter overrides after fitting, without silently altering the published constants.
     coefficients = PAPER_ZONE0_PARAMETERS.copy()
     if parameters is not None:
@@ -663,9 +706,9 @@ def etas_from_csv_row(
 
 # CHAT: Add four disjoint distance bands for magnitude-weighted historical earthquake activity.
 CHARLESONIAN_DISTANCE_EDGES_KM = (0.0, 25.0, 50.0, 100.0, 200.0)
-# CHAT: Separate the five-year startup delay from the unlimited historical lookback.
-CHARLESONIAN_LOOKBACK_DAYS = None
-CHARLESONIAN_WARMUP_DAYS = 5 * 365
+# CHAT: Revert to rolling five-year history, with partial startup values restored.
+CHARLESONIAN_LOOKBACK_DAYS = 5 * 365
+CHARLESONIAN_WARMUP_DAYS = 0
 
 
 # CHAT: Prepare a time-sorted, vectorized history once for efficient repeated point queries.
@@ -708,20 +751,21 @@ def TheCharlesonian(
             or a prepared _CharlesonianCatalog for repeated queries.
     current_day: numeric day on the events' time origin, or an ISO timestamp/
                  datetime when the events use the CSV loader's UTC epoch.
-    lookback_days: defaults to None: ALL supplied earlier history; a positive value
-                   restricts history to current_day-lookback_days < day < current_day.
-    warmup_days: wait 1,825 days from history_start before returning sums.
-                 Set zero explicitly to disable this startup requirement.
+    lookback_days: defaults to 1,825 days, selecting only
+                   current_day-lookback_days < day < current_day.
+                   Explicit None is an optional all-history override.
+    warmup_days: defaults to zero, so partial startup histories are calculated.
+                 A positive value optionally delays output from history_start.
     history_start: numeric day or ISO timestamp, inclusive. Defaults to the
                    earliest valid seismic event in the supplied history.
                    Events before an explicit start never enter the sums.
     mag_min: None includes all valid magnitudes (including zero/negative ones);
              otherwise require event.mag > mag_min. Depth is not filtered.
 
-    Early rows return None for each band (blank fields in CSV; null in JSON).
-    At exactly history_start + warmup_days, output begins. Historical events
-    from the startup period remain available to EVERY later query. A mature
-    query uses expanding history by default, never a rolling five-year window.
+    # CHAT: Restore the original startup behavior: compute available history,
+    # CHAT: while the combined exporter flags rows lacking a full rolling window.
+    An optional nonzero warmup returns None until that delay has elapsed.
+    Earthquakes age out of the default rolling window after 1,825 days.
     Events at or after current_day are always excluded, even in an unsorted
     catalog. Coordinates can be anywhere on Earth; no ETAS grid is required.
     After startup, an empty bucket returns zero. Unknown history start with a
@@ -750,15 +794,15 @@ def TheCharlesonian(
     coverage_start = history_start if history_start is not None else (
         float(catalog.days[0]) if len(catalog.days) else None
     )
-    if ((coverage_start is None and warmup_days > 0)
-            or (coverage_start is not None and current_day < coverage_start + warmup_days)):
+    # CHAT: Default zero delay returns numeric sums (including zero) even before the first event.
+    if warmup_days > 0 and (coverage_start is None or current_day < coverage_start + warmup_days):
         return dict.fromkeys(columns, None)
     # CHAT: Enforce prediction-time history, preventing self, simultaneous-event, and future-event leakage.
     stop = int(np.searchsorted(catalog.days, current_day, side="left"))
     start = 0 if lookback_days is None else int(
         np.searchsorted(catalog.days, current_day - lookback_days, side="right")
     )
-    # CHAT: Keep the first historical earthquake, including all startup-period events, in expanding sums.
+    # CHAT: Respect an explicit coverage start as well as the rolling window boundary.
     if coverage_start is not None:
         start = max(start, int(np.searchsorted(catalog.days, coverage_start, side="left")))
     latitudes, longitudes = catalog.latitudes[start:stop], catalog.longitudes[start:stop]
@@ -786,7 +830,7 @@ def charlesonian_from_csv_row(
     csv_filename, row_index, *, history_csv=None,
     lookback_days=CHARLESONIAN_LOOKBACK_DAYS, mag_min=None,
     distance_edges_km=CHARLESONIAN_DISTANCE_EDGES_KM,
-    warmup_days=CHARLESONIAN_WARMUP_DAYS, history_start=None,  # CHAT: Share expanding-history startup controls.
+    warmup_days=CHARLESONIAN_WARMUP_DAYS, history_start=None,  # CHAT: Share optional startup controls.
 ):
     """Score one seismic row, optionally using only a separate history CSV.
 
@@ -818,7 +862,7 @@ def charlesonian_from_csv_row(
     return TheCharlesonian(
         history, lat, lng, time, lookback_days=lookback_days, mag_min=mag_min,
         distance_edges_km=distance_edges_km,
-        warmup_days=warmup_days, history_start=history_start,  # CHAT: Preserve all history after startup.
+        warmup_days=warmup_days, history_start=history_start,  # CHAT: Preserve optional coverage controls.
     )
 
 
@@ -835,9 +879,9 @@ def add_charlesonian_to_csv(
     for validation/test targets. Existing matching feature columns are replaced,
     not duplicated. Invalid target coordinates/time abort the export; malformed
     historical seismic rows are skipped by the existing CSV history loader.
-    Startup rows remain in the output with blank Charlesonian fields. Mature
-    rows use all earlier history by default. Returns the number of processed
-    seismic rows, including startup rows. No model fitting is performed.
+    Startup rows use partial rolling histories by default. Explicit warmup_days
+    can leave their fields blank. Returns the number of processed seismic rows,
+    including startup rows. No model fitting is performed.
     """
     input_csv, output_csv = Path(input_csv), Path(output_csv)
     history_csv = input_csv if history_csv is None else Path(history_csv)
@@ -898,6 +942,10 @@ def main():
     parser.add_argument("--dist-max", type=float, default=200.0, help="Radius in km")
     parser.add_argument("--mag-min", type=float, default=1.75)
     parser.add_argument("--cell-size", type=float, default=0.5, help="Grid cell size in degrees")
+    # CHAT: The same equations CLI supports the requested paper/fitted switch.
+    parser.add_argument("--fitted", type=int, choices=(0, 1), default=0, help="0=paper mu/K; 1=fitted mu/K")
+    # CHAT: Accept old commands while removing their JSON dependency.
+    parser.add_argument("--fit-file", help="Legacy option, ignored; fitted mu/K are hard-coded")
     # CHAT: Expose forecast horizon separately from the historical lookback.
     parser.add_argument("--forecast-days", type=float, default=30.0)
     # CHAT: Do not implicitly change the published magnitude reference when changing --mag-min.
@@ -909,20 +957,23 @@ def main():
     parser.add_argument("--charlesonian", action="store_true", help="Return magnitude sums for one row")
     parser.add_argument("--charlesonian-output", help="Write all seismic-row magnitude sums to this CSV")
     parser.add_argument("--history-csv", help="Use ONLY this CSV as Charlesonian history")
-    # CHAT: All history is the default; the startup delay has its own independent option.
-    parser.add_argument("--history-days", type=float, help="Optional rolling lookback; omit for ALL earlier history")
-    parser.add_argument("--warmup-days", type=float, help="Startup delay from history start; default 1825 days")
+    # CHAT: Restore a 1,825-day rolling default with no startup suppression.
+    parser.add_argument("--history-days", type=float, help="Rolling lookback in days; default 1825")
+    parser.add_argument("--warmup-days", type=float, help="Optional startup delay; default 0 (calculate early rows)")
     parser.add_argument("--history-start", help="Inclusive history start, ISO UTC; default earliest history seismic event")
     parser.add_argument("--history-mag-min", type=float, help="Optional strict Charlesonian magnitude cutoff")
     args = parser.parse_args()
-    # CHAT: Resolve startup separately from the expanding lookback.
-    charlesonian_days = args.history_days
+    # CHAT: Resolve the rolling lookback independently of the optional startup delay.
+    charlesonian_days = CHARLESONIAN_LOOKBACK_DAYS if args.history_days is None else args.history_days
     warmup_days = CHARLESONIAN_WARMUP_DAYS if args.warmup_days is None else args.warmup_days
     # CHAT: Reject ambiguous modes instead of ignoring a supplied row index or history option.
     if args.charlesonian_output and (args.row_index is not None or args.charlesonian):
         parser.error("Use --charlesonian-output without row_index or --charlesonian.")
     if not args.charlesonian_output and args.row_index is None:
         parser.error("Provide a row_index or --charlesonian-output.")
+    # CHAT: Reject ETAS fitting controls in a Charlesonian-only request.
+    if (args.charlesonian or args.charlesonian_output) and (args.fitted or args.fit_file is not None):
+        parser.error("--fitted and --fit-file apply to ETAS, not Charlesonian-only modes.")
     if not (args.charlesonian or args.charlesonian_output) and any(
         option is not None for option in (args.history_csv, args.history_days, args.history_mag_min,
                                           args.warmup_days, args.history_start)
@@ -953,6 +1004,7 @@ def main():
             # CHAT: Forward the new CLI settings to the selected-row calculation.
             forecast_days=args.forecast_days, magnitude_reference=args.magnitude_reference,
             quadrature_rtol=args.quadrature_rtol, quadrature_max_order=args.quadrature_max_order,
+            fitted=args.fitted, fit_file=args.fit_file,  # CHAT: Pass the mode to the ETAS calculation.
         )
     except (OSError, ValueError, IndexError, ArithmeticError) as exc:  # CHAT: Report quadrature failures clearly.
         parser.error(str(exc))
