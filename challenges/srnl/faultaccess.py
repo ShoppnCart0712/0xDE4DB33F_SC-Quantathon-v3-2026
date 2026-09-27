@@ -14,8 +14,8 @@ from shapely.geometry import Point
 # Configuration
 # ==================================================
 
-INPUT_CSV = "./Data/earthquakeq_train.csv"
-OUTPUT_CSV = "locations_with_fault_delta.csv"
+INPUT_CSV = "./Data/earthquakeq_test.csv"
+OUTPUT_CSV = "./Data/earthquakeq_test copy.csv"
 
 LATITUDE_COLUMN = "latitude"
 LONGITUDE_COLUMN = "longitude"

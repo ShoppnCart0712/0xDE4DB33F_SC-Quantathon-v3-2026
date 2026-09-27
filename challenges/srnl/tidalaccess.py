@@ -4,9 +4,9 @@ from shapely.geometry import Point
 from shapely.ops import unary_union, nearest_points
 
 # Files
-input_csv = "./Data/earthquakeq_test.csv"
+input_csv = "./Data/earthquakeq_judge copy.csv"
 coastline_file = "coastline_25_50N_90_65W.geojson"
-output_csv = "output_with_coast_delta.csv"
+output_csv = "./Data/earthquakeq_judge.csv"
 
 # Read the CSV
 df = pd.read_csv(input_csv)
