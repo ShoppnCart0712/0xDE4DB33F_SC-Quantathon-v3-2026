@@ -1,0 +1,273 @@
+==========> V1 <==========
+Training labels
+shape: (11582,)
+unique values: [0 1]
+counts: {np.int64(0): np.int64(3878), np.int64(1): np.int64(7704)}
+positive rate: 0.6651700915213262
+
+Test labels
+shape: (2027,)
+unique values: [0 1]
+counts: {np.int64(0): np.int64(593), np.int64(1): np.int64(1434)}
+positive rate: 0.7074494326591021
+
+Judge labels
+shape: (740,)
+unique values: [0 1]
+counts: {np.int64(0): np.int64(281), np.int64(1): np.int64(459)}
+positive rate: 0.6202702702702703
+
+Feature configuration:
+Features: ['latitude', 'longitude', 'fault delta', 'coast delta', 'depth_km']
+Number of classical features: 5
+Number of qubits: 5
+PCA: DISABLED
+Epoch 01/30 - loss: 0.6410
+Epoch 02/30 - loss: 0.5699
+Epoch 03/30 - loss: 0.5421
+Epoch 04/30 - loss: 0.5325
+Epoch 05/30 - loss: 0.5272
+Epoch 06/30 - loss: 0.5240
+Epoch 07/30 - loss: 0.5204
+Epoch 08/30 - loss: 0.5182
+Epoch 09/30 - loss: 0.5167
+Epoch 10/30 - loss: 0.5147
+Epoch 11/30 - loss: 0.5133
+Epoch 12/30 - loss: 0.5125
+Epoch 13/30 - loss: 0.5114
+Epoch 14/30 - loss: 0.5099
+Epoch 15/30 - loss: 0.5099
+Training stopped early: loss unchanged.
+
+Training positive rate: 0.665170
+
+Test results
+AUC:         0.8102
+PR-AUC:      0.9191
+IG_bits:     0.1667
+Brier:       0.1645
+ECE:         0.1228
+Accuracy:    0.7089
+Precision:   0.9342
+Recall:      0.6332
+F1 score:    0.7548
+Confusion matrix:
+[[529  64]
+ [526 908]]
+
+Judge results
+AUC:         0.8437
+PR-AUC:      0.9008
+IG_bits:     0.2648
+Brier:       0.1591
+ECE:         0.0810
+Accuracy:    0.7581
+Precision:   0.8226
+Recall:      0.7778
+F1 score:    0.7996
+Confusion matrix:
+[[204  77]
+ [102 357]]
+
+Prediction sample:
+   actual  probability_event_within_100km  predicted_class
+0       0                        0.310918                0
+1       1                        0.868883                1
+2       0                        0.355766                0
+3       1                        0.853059                1
+4       1                        0.841084                1
+5       1                        0.840429                1
+6       1                        0.853090                1
+7       1                        0.832995                1
+8       1                        0.867224                1
+9       0                        0.404313                0
+
+
+
+
+==========> V2 <==========
+Training labels
+shape: (11582,)
+unique values: [0 1]
+counts: {np.int64(0): np.int64(3878), np.int64(1): np.int64(7704)}
+positive rate: 0.6651700915213262
+
+Test labels
+shape: (2027,)
+unique values: [0 1]
+counts: {np.int64(0): np.int64(593), np.int64(1): np.int64(1434)}
+positive rate: 0.7074494326591021
+
+Judge labels
+shape: (740,)
+unique values: [0 1]
+counts: {np.int64(0): np.int64(281), np.int64(1): np.int64(459)}
+positive rate: 0.6202702702702703
+
+Feature configuration:
+Features: ['latitude', 'longitude', 'fault delta', 'coast delta', 'depth_km']
+Number of classical features: 3
+Number of qubits: 3
+PCA: DISABLED
+Epoch 01/30 - loss: 0.6048
+Epoch 02/30 - loss: 0.5637
+Epoch 03/30 - loss: 0.5425
+Epoch 04/30 - loss: 0.5336
+Epoch 05/30 - loss: 0.5266
+Epoch 06/30 - loss: 0.5209
+Epoch 07/30 - loss: 0.5165
+Epoch 08/30 - loss: 0.5143
+Epoch 09/30 - loss: 0.5123
+Epoch 10/30 - loss: 0.5113
+Epoch 11/30 - loss: 0.5106
+Epoch 12/30 - loss: 0.5102
+Epoch 13/30 - loss: 0.5104
+Epoch 14/30 - loss: 0.5096
+Epoch 15/30 - loss: 0.5098
+Epoch 16/30 - loss: 0.5097
+Epoch 17/30 - loss: 0.5096
+Epoch 18/30 - loss: 0.5092
+Epoch 19/30 - loss: 0.5095
+Epoch 20/30 - loss: 0.5093
+Epoch 21/30 - loss: 0.5092
+Epoch 22/30 - loss: 0.5094
+Epoch 23/30 - loss: 0.5090
+Epoch 24/30 - loss: 0.5088
+Epoch 25/30 - loss: 0.5090
+Epoch 26/30 - loss: 0.5086
+Epoch 27/30 - loss: 0.5094
+Epoch 28/30 - loss: 0.5094
+Training stopped early: loss unchanged.
+
+Training positive rate: 0.665170
+
+Test results
+AUC:         0.8293
+PR-AUC:      0.9252
+IG_bits:     0.1900
+Brier:       0.1576
+ECE:         0.0959
+Accuracy:    0.7168
+Precision:   0.9283
+Recall:      0.6499
+F1 score:    0.7646
+Confusion matrix:
+[[521  72]
+ [502 932]]
+
+Judge results
+AUC:         0.8580
+PR-AUC:      0.9087
+IG_bits:     0.2887
+Brier:       0.1514
+ECE:         0.0719
+Accuracy:    0.7703
+Precision:   0.8449
+Recall:      0.7712
+F1 score:    0.8064
+Confusion matrix:
+[[216  65]
+ [105 354]]
+
+Prediction sample:
+   actual  probability_event_within_100km  predicted_class
+0       0                        0.347321                0
+1       1                        0.882824                1
+2       0                        0.295406                0
+3       1                        0.878960                1
+4       1                        0.881237                1
+5       1                        0.879412                1
+6       1                        0.875320                1
+7       1                        0.872587                1
+8       1                        0.880465                1
+9       0                        0.421927                0
+
+==========> V3 <==========
+Training labels
+shape: (11582,)
+unique values: [0 1]
+counts: {np.int64(0): np.int64(3878), np.int64(1): np.int64(7704)}
+positive rate: 0.6651700915213262
+
+Test labels
+shape: (2027,)
+unique values: [0 1]
+counts: {np.int64(0): np.int64(593), np.int64(1): np.int64(1434)}
+positive rate: 0.7074494326591021
+
+Judge labels
+shape: (740,)
+unique values: [0 1]
+counts: {np.int64(0): np.int64(281), np.int64(1): np.int64(459)}
+positive rate: 0.6202702702702703
+
+Feature configuration:
+Features: ['latitude', 'longitude', 'fault delta', 'coast delta', 'depth_km', 'ETAS']
+Number of classical features: 4
+Number of qubits: 4
+PCA: DISABLED
+Epoch 01/30 - loss: 0.6259
+Epoch 02/30 - loss: 0.5449
+Epoch 03/30 - loss: 0.5184
+Epoch 04/30 - loss: 0.5088
+Epoch 05/30 - loss: 0.5045
+Epoch 06/30 - loss: 0.5025
+Epoch 07/30 - loss: 0.5009
+Epoch 08/30 - loss: 0.5000
+Epoch 09/30 - loss: 0.4988
+Epoch 10/30 - loss: 0.4979
+Epoch 11/30 - loss: 0.4973
+Epoch 12/30 - loss: 0.4969
+Epoch 13/30 - loss: 0.4966
+Epoch 14/30 - loss: 0.4957
+Epoch 15/30 - loss: 0.4955
+Epoch 16/30 - loss: 0.4951
+Epoch 17/30 - loss: 0.4953
+Epoch 18/30 - loss: 0.4948
+Epoch 19/30 - loss: 0.4952
+Epoch 20/30 - loss: 0.4948
+Epoch 21/30 - loss: 0.4948
+Training stopped early: loss unchanged.
+
+Training positive rate: 0.665170
+
+Test results
+AUC:         0.8527
+PR-AUC:      0.9328
+IG_bits:     0.2552
+Brier:       0.1425
+ECE:         0.0661
+Accuracy:    0.7311
+Precision:   0.9345
+Recall:      0.6667
+F1 score:    0.7782
+Confusion matrix:
+[[526  67]
+ [478 956]]
+
+Judge results
+AUC:         0.8749
+PR-AUC:      0.9256
+IG_bits:     0.3366
+Brier:       0.1420
+ECE:         0.0499
+Accuracy:    0.7865
+Precision:   0.8182
+Recall:      0.8431
+F1 score:    0.8305
+Confusion matrix:
+[[195  86]
+ [ 72 387]]
+
+Prediction sample:
+   actual  probability_event_within_100km  predicted_class
+0       0                        0.229940                0
+1       1                        0.908055                1
+2       0                        0.192291                0
+3       1                        0.943093                1
+4       1                        0.918240                1
+5       1                        0.929311                1
+6       1                        0.927747                1
+7       1                        0.874593                1
+8       1                        0.919501                1
+9       0                        0.239373                0
