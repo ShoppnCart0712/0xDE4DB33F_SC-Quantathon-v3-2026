@@ -6,6 +6,17 @@ Single row:
 Batch using the previously supplied companion script:
     python add_etas_to_csv.py Data/earthquakeq_train.csv Data/earthquakeq_train_with_etas.csv --equations fuckassequation.py
 
+# CHAT: Add magnitude-sum feature examples; this feature does not modify the ETAS equations.
+Single-row historical magnitude sums:
+    python fuckassequation.py Data/earthquakeq_train.csv 73 --charlesonian
+Export the four bands for every seismic row:
+    python fuckassequation.py Data/earthquakeq_train.csv --charlesonian-output Data/earthquakeq_train_charlesonian.csv
+Freeze training history when scoring another file:
+    python fuckassequation.py Data/earthquakeq_test.csv --charlesonian-output Data/earthquakeq_test_charlesonian.csv --history-csv Data/earthquakeq_train.csv
+# CHAT: The default Charlesonian window is now 1,825 days; no magnitude cutoff is applied.
+Use --history-days to override it, or --history-mag-min 1.75 for a strict
+magnitude cutoff. All magnitudes are included by default. Current-time and future events never contribute.
+
 CHANGES (search for '# CHAT:' for descriptions beside edited code):
 * Exact continuous time integral instead of the 30-sample daily sum.
 * Adaptive spherical cell integration for triggering, with a convergence check.
@@ -26,6 +37,9 @@ The helper functions and return keys used by add_etas_to_csv.py remain available
 import argparse
 import csv
 import json
+import os  # CHAT: Atomically publish completed Charlesonian CSV exports.
+import tempfile  # CHAT: Keep partial CSV exports from replacing a complete file.
+from pathlib import Path  # CHAT: Resolve and protect separate history/target CSV paths.
 from datetime import datetime as DateTime, timezone
 from functools import lru_cache  # CHAT: Reuse cell nodes and spatial integrals across CSV rows.
 import math as m
@@ -266,7 +280,7 @@ def generate_random_events(
 # CHAT: Centralize the unchanged Table 2, Zone 0 constants so fitted values can be supplied explicitly.
 PAPER_ZONE0_PARAMETERS = {
     "K": 0.146, "a": 0.406, "c": 0.566, "p": 1.22,
-    "d": 60.5, "q": 1.52, "mu": 2.38e-7,
+    "d": 60.5, "q": 1.52, "mu": 0.134e-9,
 }
 
 
@@ -643,11 +657,207 @@ def etas_from_csv_row(
     return result
 
 
+# CHAT: Add four disjoint distance bands for magnitude-weighted historical earthquake activity.
+CHARLESONIAN_DISTANCE_EDGES_KM = (0.0, 25.0, 50.0, 100.0, 200.0)
+# CHAT: Use a fixed five-year (1,825-day) history by default for comparable features.
+CHARLESONIAN_LOOKBACK_DAYS = 5 * 365
+
+
+# CHAT: Prepare a time-sorted, vectorized history once for efficient repeated point queries.
+class _CharlesonianCatalog:
+    def __init__(self, events):
+        data = np.asarray([(e.day, e.lat, e.lng, e.mag) for e in events], dtype=float).reshape(-1, 4)
+        valid = (np.isfinite(data).all(axis=1)
+                 & (np.abs(data[:, 1]) <= 90) & (np.abs(data[:, 2]) <= 180))
+        data = data[valid]
+        data = data[np.argsort(data[:, 0], kind="stable")]
+        self.days = data[:, 0]
+        self.latitudes = np.radians(data[:, 1])
+        self.longitudes = np.radians(data[:, 2])
+        self.magnitudes = data[:, 3]
+
+
+# CHAT: Validate configurable band edges and keep CSV column names tied to their actual distances.
+def _charlesonian_columns(distance_edges_km):
+    edges = np.asarray(distance_edges_km, dtype=float)
+    if (edges.ndim != 1 or len(edges) < 2 or not np.isfinite(edges).all()
+            or edges[0] != 0 or not np.all(np.diff(edges) > 0)):
+        raise ValueError("Distance edges must be finite, strictly increasing, and start at zero.")
+    return edges, [f"Charlesonian_{lo:g}_{hi:g}_km" for lo, hi in zip(edges[:-1], edges[1:])]
+
+
+# CHAT: Add the requested TheCharlesonian function; weights are each historical event's own magnitude.
+def TheCharlesonian(
+    events, lat, lng, current_day, *,
+    distance_edges_km=CHARLESONIAN_DISTANCE_EDGES_KM,
+    lookback_days=CHARLESONIAN_LOOKBACK_DAYS, mag_min=None,
+):
+    """Return one magnitude sum per distance band for a point at a given time.
+
+    Default bands are [0,25), [25,50), [50,100), [100,200] km. A historical
+    earthquake contributes its OWN magnitude exactly once, not the target's
+    magnitude. No weights are learned here. These are raw ML input features.
+
+    events: s_event iterable (use load_events_from_csv for seismic-only input)
+            or a prepared _CharlesonianCatalog for repeated queries.
+    current_day: numeric day on the events' time origin, or an ISO timestamp/
+                 datetime when the events use the CSV loader's UTC epoch.
+    lookback_days: defaults to 1,825 days (five 365-day years). Explicit None
+                   means all supplied earlier history; a positive value
+                   restricts history to current_day-lookback_days < day < current_day.
+    mag_min: None includes all valid magnitudes (including zero/negative ones);
+             otherwise require event.mag > mag_min. Depth is not filtered.
+
+    Early rows with less than five years of supplied history use a partial
+    window. The combined add_etas_to_csv exporter flags these for exclusion
+    when fitting weights; this point-query function does not drop observations.
+    Events at or after current_day are always excluded, even in an unsorted
+    catalog. Coordinates can be anywhere on Earth; no ETAS grid is required.
+    An empty eligible history returns zeros, not missing values. These sums
+    measure recorded activity, not released energy or geological stability.
+    """
+    if isinstance(current_day, (str, DateTime)):
+        current_day = _to_day(current_day)
+    if not (all(m.isfinite(v) for v in (lat, lng, current_day))
+            and -90 <= lat <= 90 and -180 <= lng <= 180):
+        raise ValueError("The target requires valid coordinates and a finite time.")
+    if lookback_days is not None and (not m.isfinite(lookback_days) or lookback_days <= 0):
+        raise ValueError("lookback_days must be positive and finite, or None.")
+    if mag_min is not None and not m.isfinite(mag_min):
+        raise ValueError("mag_min must be finite, or None.")
+    edges, columns = _charlesonian_columns(distance_edges_km)
+    catalog = events if isinstance(events, _CharlesonianCatalog) else _CharlesonianCatalog(events)
+    # CHAT: Enforce prediction-time history, preventing self, simultaneous-event, and future-event leakage.
+    stop = int(np.searchsorted(catalog.days, current_day, side="left"))
+    start = 0 if lookback_days is None else int(
+        np.searchsorted(catalog.days, current_day - lookback_days, side="right")
+    )
+    latitudes, longitudes = catalog.latitudes[start:stop], catalog.longitudes[start:stop]
+    magnitudes = catalog.magnitudes[start:stop]
+    if mag_min is not None:
+        keep = magnitudes > mag_min
+        latitudes, longitudes, magnitudes = latitudes[keep], longitudes[keep], magnitudes[keep]
+    target_lat, target_lng = m.radians(lat), m.radians(lng)
+    hav = (np.sin((latitudes - target_lat) / 2) ** 2
+           + np.cos(latitudes) * m.cos(target_lat) * np.sin((longitudes - target_lng) / 2) ** 2)
+    distances = 2 * EARTH_RADIUS_KM * np.arcsin(np.sqrt(np.clip(hav, 0.0, 1.0)))
+    # CHAT: Snap sub-micrometre distance roundoff at edges so an exact boundary is assigned consistently.
+    for edge in edges:
+        distances[np.isclose(distances, edge, rtol=0.0, atol=1e-9)] = edge
+    result = {}
+    for index, (lo, hi, column) in enumerate(zip(edges[:-1], edges[1:], columns)):
+        upper = distances <= hi if index == len(columns) - 1 else distances < hi
+        selected = magnitudes[(distances >= lo) & upper]
+        result[column] = m.fsum(selected.tolist())
+    return result
+
+
+# CHAT: Provide the same zero-based CSV row workflow for TheCharlesonian as for ETAS.
+def charlesonian_from_csv_row(
+    csv_filename, row_index, *, history_csv=None,
+    lookback_days=CHARLESONIAN_LOOKBACK_DAYS, mag_min=None,
+    distance_edges_km=CHARLESONIAN_DISTANCE_EDGES_KM,
+):
+    """Score one seismic row, optionally using only a separate history CSV.
+
+    A supplied history_csv is the ONLY source of parent events. Target CSV
+    events are never automatically merged into that history. Thus training
+    history can be frozen when evaluating another dataset.
+    """
+    if isinstance(row_index, bool) or not isinstance(row_index, (int, np.integer)):
+        raise TypeError("row_index must be a zero-based integer.")
+    if row_index < 0:
+        raise IndexError("row_index must be nonnegative.")
+    rows = _csv_rows(csv_filename)
+    try:
+        for index, target in enumerate(rows):
+            if index == row_index:
+                break
+        else:
+            raise IndexError(f"row_index {row_index} is outside the CSV data rows.")
+    finally:
+        rows.close()
+    if not _is_seismic(target):
+        raise ValueError(f"Row {row_index} is not a seismic row.")
+    try:
+        lat, lng = _coordinates(target)
+        time = _parse_time(target["time"])
+    except (TypeError, ValueError, AttributeError, OverflowError) as exc:
+        raise ValueError(f"Row {row_index} has invalid time or coordinates.") from exc
+    history = load_events_from_csv(csv_filename if history_csv is None else history_csv)
+    return TheCharlesonian(
+        history, lat, lng, time, lookback_days=lookback_days, mag_min=mag_min,
+        distance_edges_km=distance_edges_km,
+    )
+
+
+# CHAT: Export four historical features while preserving all original CSV rows and values.
+def add_charlesonian_to_csv(
+    input_csv, output_csv, *, history_csv=None, lookback_days=CHARLESONIAN_LOOKBACK_DAYS,
+    mag_min=None, distance_edges_km=CHARLESONIAN_DISTANCE_EDGES_KM,
+):
+    """Append magnitude sums to seismic rows; other sources receive blanks.
+
+    History defaults to input_csv, but EVERY target uses strictly earlier
+    timestamps. Set history_csv to the training catalog to freeze history
+    for validation/test targets. Existing matching feature columns are replaced,
+    not duplicated. Invalid target coordinates/time abort the export; malformed
+    historical seismic rows are skipped by the existing CSV history loader.
+    Returns the number of scored seismic rows. No model fitting is performed.
+    """
+    input_csv, output_csv = Path(input_csv), Path(output_csv)
+    history_csv = input_csv if history_csv is None else Path(history_csv)
+    if output_csv.resolve() in {input_csv.resolve(), history_csv.resolve()}:
+        raise ValueError("Output must differ from both the target and history input files.")
+    edges, columns = _charlesonian_columns(distance_edges_km)
+    catalog = _CharlesonianCatalog(load_events_from_csv(history_csv))
+    # CHAT: Validate options even when the target file has no seismic rows.
+    TheCharlesonian([], 0.0, 0.0, 0.0, distance_edges_km=edges,
+                    lookback_days=lookback_days, mag_min=mag_min)
+    temporary_path = None
+    count = 0
+    try:
+        with input_csv.open("r", newline="", encoding="utf-8-sig") as source:
+            reader = csv.DictReader(source)
+            missing = REQUIRED_COLUMNS - set(reader.fieldnames or [])
+            if missing:
+                raise ValueError(f"CSV is missing required columns: {sorted(missing)}")
+            fieldnames = [name for name in reader.fieldnames if name not in columns] + columns
+            # CHAT: Replace the output only after a complete successful export.
+            with tempfile.NamedTemporaryFile(
+                mode="w", newline="", encoding="utf-8", dir=output_csv.parent,
+                suffix=".csv", delete=False,
+            ) as destination:
+                temporary_path = Path(destination.name)
+                writer = csv.DictWriter(destination, fieldnames=fieldnames)
+                writer.writeheader()
+                for index, row in enumerate(reader):
+                    row.update(dict.fromkeys(columns, ""))
+                    if _is_seismic(row):
+                        try:
+                            lat, lng = _coordinates(row)
+                            row.update(TheCharlesonian(
+                                catalog, lat, lng, _to_day(row["time"]),
+                                distance_edges_km=edges, lookback_days=lookback_days, mag_min=mag_min,
+                            ))
+                        except (ValueError, TypeError, AttributeError, OverflowError) as exc:
+                            raise ValueError(f"Seismic data row {index}: {exc}") from exc
+                        count += 1
+                    writer.writerow(row)
+        os.replace(temporary_path, output_csv)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+    return count
+
+
 # CHAT: Expose the new controls in the CLI; the CSV batch wrapper can continue using defaults.
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("csv_filename", help="Path to the mixed-source CSV")
-    parser.add_argument("row_index", type=int, help="Zero-based data-row index, excluding header")
+    # CHAT: Row index is optional only for a whole-file Charlesonian export.
+    parser.add_argument("row_index", type=int, nargs="?", help="Zero-based data-row index, excluding header")
     parser.add_argument("--dt-max", type=float, default=180.0, help="Lookback in days")
     parser.add_argument("--dist-max", type=float, default=200.0, help="Radius in km")
     parser.add_argument("--mag-min", type=float, default=1.75)
@@ -659,8 +869,42 @@ def main():
     # CHAT: Make quadrature convergence tolerance and work limit configurable.
     parser.add_argument("--quadrature-rtol", type=float, default=1e-6)
     parser.add_argument("--quadrature-max-order", type=int, default=128)
+    # CHAT: Add single-row and whole-file Charlesonian modes without changing the default ETAS mode.
+    parser.add_argument("--charlesonian", action="store_true", help="Return magnitude sums for one row")
+    parser.add_argument("--charlesonian-output", help="Write all seismic-row magnitude sums to this CSV")
+    parser.add_argument("--history-csv", help="Use ONLY this CSV as Charlesonian history")
+    # CHAT: Resolve an omitted history-days to 1,825 only in Charlesonian modes.
+    parser.add_argument("--history-days", type=float, help="Charlesonian lookback in days; default 1825")
+    parser.add_argument("--history-mag-min", type=float, help="Optional strict Charlesonian magnitude cutoff")
     args = parser.parse_args()
+    # CHAT: Keep ETAS-only option validation unchanged while applying the new Charlesonian default.
+    charlesonian_days = CHARLESONIAN_LOOKBACK_DAYS if args.history_days is None else args.history_days
+    # CHAT: Reject ambiguous modes instead of ignoring a supplied row index or history option.
+    if args.charlesonian_output and (args.row_index is not None or args.charlesonian):
+        parser.error("Use --charlesonian-output without row_index or --charlesonian.")
+    if not args.charlesonian_output and args.row_index is None:
+        parser.error("Provide a row_index or --charlesonian-output.")
+    if not (args.charlesonian or args.charlesonian_output) and any(
+        option is not None for option in (args.history_csv, args.history_days, args.history_mag_min)
+    ):
+        parser.error("History options require a Charlesonian mode.")
     try:
+        # CHAT: Export uses a prepared history once and filters earlier timestamps for every target.
+        if args.charlesonian_output:
+            count = add_charlesonian_to_csv(
+                args.csv_filename, args.charlesonian_output, history_csv=args.history_csv,
+                lookback_days=charlesonian_days, mag_min=args.history_mag_min,
+            )
+            print(f"Added Charlesonian features for {count:,} seismic rows: {args.charlesonian_output}")
+            return
+        # CHAT: A single-row Charlesonian request returns only the four magnitude sums.
+        if args.charlesonian:
+            result = charlesonian_from_csv_row(
+                args.csv_filename, args.row_index, history_csv=args.history_csv,
+                lookback_days=charlesonian_days, mag_min=args.history_mag_min,
+            )
+            print(json.dumps(result, indent=2))
+            return
         result = etas_from_csv_row(
             args.csv_filename, args.row_index, dt_max=args.dt_max,
             dist_max=args.dist_max, mag_min=args.mag_min, cell_size=args.cell_size,
